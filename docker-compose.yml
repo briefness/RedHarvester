@@ -1,0 +1,14 @@
+services:
+  xhs-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xhs_ai_backend
+    ports:
+      - "8888:8000"
+    environment:
+      - PORT=8000
+      - VOLC_API_KEY=${VOLC_API_KEY:-}
+      - VOLC_BASE_URL=${VOLC_BASE_URL:-https://ark.cn-beijing.volces.com/api/plan/v3}
+      - VOLC_MODEL_NAME=${VOLC_MODEL_NAME:-doubao-seed-2.0-pro}
+    restart: always

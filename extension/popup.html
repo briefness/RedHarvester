@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            width: 320px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #121216;
+            color: #fff;
+            margin: 0;
+            padding: 16px;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+        }
+        .title {
+            font-size: 15px;
+            font-weight: 700;
+            color: #ff2442;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+        }
+        .card {
+            background: #1c1c24;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .card-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .btn {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #ff2442, #e01b36);
+            color: #fff;
+        }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+        .btn-secondary:hover { background: rgba(255,255,255,0.15); }
+        .footer-note {
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">🔥 RED AI 助手</div>
+        <div class="status-badge" id="conn-status">后端连接中</div>
+    </div>
+
+    <div class="card">
+        <div class="card-row">
+            <span style="color:#aaa;">待自动发布任务:</span>
+            <strong id="queue-count" style="color:#10b981;">0 条</strong>
+        </div>
+        <div class="card-row" style="margin-bottom:0;">
+            <span style="color:#aaa;">防风控模拟按键:</span>
+            <span style="color:#38bdf8;">已开启 (拟人输入)</span>
+        </div>
+    </div>
+
+    <button id="btn-scrape-page" class="btn btn-secondary">📥 抓取当前页面爆款图文</button>
+    <button id="btn-auto-publish" class="btn btn-primary">🚀 在创作者中心执行自动化发布</button>
+
+    <div id="msg-box" style="font-size:12px; color:#ff6b81; margin-top:6px; min-height:16px;"></div>
+
+    <div class="footer-note">建议在 creator.xiaohongshu.com 使用</div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

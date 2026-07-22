@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "RED AI Auto-Publisher & Scraper",
+  "version": "1.0.0",
+  "description": "小红书爆款提取与自研防风控自动化发布插件 Demo",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.xiaohongshu.com/*",
+    "http://localhost:8888/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "RED AI Auto-Publisher"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.xiaohongshu.com/*",
+        "*://creator.xiaohongshu.com/*"
+      ],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
