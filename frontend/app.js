@@ -7,6 +7,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const origTitleInput = document.getElementById('orig-title');
     const origAuthorInput = document.getElementById('orig-author');
     const origContentInput = document.getElementById('orig-content');
+    const modelConfigForm = document.getElementById('model-config-form');
+    const modelBaseUrlInput = document.getElementById('model-base-url');
+    const modelApiKeyInput = document.getElementById('model-api-key');
+    const modelNameInput = document.getElementById('model-name');
+    const modelImageNameInput = document.getElementById('model-image-name');
+    const modelImageSizeInput = document.getElementById('model-image-size');
+    const modelConfigMeta = document.getElementById('model-config-meta');
+    const resetModelConfigButton = document.getElementById('btn-reset-model-config');
     
     const reviewCardsList = document.getElementById('review-cards-list');
     const queueCardsList = document.getElementById('queue-cards-list');
@@ -65,6 +73,22 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!res.ok) throw new Error('提示词配置加载失败');
         const config = await res.json();
         defaultPrompt = config.default_prompt || '';
+    }
+
+    async function loadModelConfig() {
+        if (!modelConfigForm) return;
+        const res = await fetch(`${API_BASE}/model-config`);
+        if (!res.ok) throw new Error('模型配置加载失败');
+        const config = await res.json();
+        modelBaseUrlInput.value = config.base_url || '';
+        modelApiKeyInput.value = config.api_key_masked || '';
+        modelNameInput.value = config.model || '';
+        modelImageNameInput.value = config.image_model || '';
+        modelImageSizeInput.value = config.image_size || '';
+        const customFields = Object.values(config.sources || {}).filter(source => source === 'custom').length;
+        modelConfigMeta.textContent = customFields > 0
+            ? `当前已使用页面配置（${customFields} 项），其余字段托底 .env`
+            : '当前全部使用 .env 默认配置';
     }
 
     function getPrompt(postId) {
@@ -348,6 +372,64 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    if (modelConfigForm) {
+        modelConfigForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const saveButton = document.getElementById('btn-save-model-config');
+            const originalButtonHtml = saveButton?.innerHTML || '';
+            if (saveButton) {
+                saveButton.disabled = true;
+                saveButton.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>保存中...</span>';
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/model-config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: modelBaseUrlInput.value.trim(),
+                        api_key: modelApiKeyInput.value,
+                        model: modelNameInput.value.trim(),
+                        image_model: modelImageNameInput.value.trim(),
+                        image_size: modelImageSizeInput.value.trim()
+                    })
+                });
+                const response = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(response.error || '模型配置保存失败');
+                await loadModelConfig();
+                showToast('✅ 模型配置已保存，后续复刻优先使用页面配置');
+            } catch (error) {
+                showToast(`❌ ${error.message || '模型配置保存失败'}`);
+            } finally {
+                if (saveButton) {
+                    saveButton.disabled = false;
+                    saveButton.innerHTML = originalButtonHtml;
+                }
+            }
+        });
+    }
+
+    if (resetModelConfigButton) {
+        resetModelConfigButton.addEventListener('click', async () => {
+            resetModelConfigButton.disabled = true;
+            try {
+                const res = await fetch(`${API_BASE}/model-config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reset: true })
+                });
+                const response = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(response.error || '恢复 .env 配置失败');
+                await loadModelConfig();
+                showToast('↺ 已恢复 .env 默认配置');
+            } catch (error) {
+                showToast(`❌ ${error.message || '恢复 .env 配置失败'}`);
+            } finally {
+                resetModelConfigButton.disabled = false;
+            }
+        });
+    }
+
     const btnFillDemo = document.getElementById('btn-fill-demo');
     if (btnFillDemo) {
         btnFillDemo.addEventListener('click', () => {
@@ -513,8 +595,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // 初始化加载与定时自动刷新
-    loadGenerationConfig()
-        .catch(err => console.error('获取提示词失败:', err))
+    Promise.all([loadGenerationConfig(), loadModelConfig()])
+        .catch(err => console.error('获取初始化配置失败:', err))
         .finally(loadData);
     setInterval(() => {
         if (replicatingPostIds.size === 0 && !reviewCardsList.contains(document.activeElement)) loadData();

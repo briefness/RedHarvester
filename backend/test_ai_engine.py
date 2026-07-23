@@ -162,6 +162,21 @@ class ReplicationTests(unittest.TestCase):
         self.assertNotIn("https://example.com/original.jpg", result["ai_images"])
         call_images.assert_called_once()
 
+    @patch("backend.ai_engine.get_model_config_overrides")
+    def test_model_config_view_prefers_custom_values_and_masks_key(self, get_overrides):
+        get_overrides.return_value = {
+            "base_url": "https://custom.example/v1",
+            "api_key": "secret-value",
+            "model": "custom-text-model"
+        }
+
+        config = ai_engine.get_model_config_view()
+
+        self.assertEqual(config["base_url"], "https://custom.example/v1")
+        self.assertEqual(config["model"], "custom-text-model")
+        self.assertEqual(config["api_key_masked"], ai_engine.MASKED_API_KEY)
+        self.assertNotIn("secret-value", str(config))
+
 
 if __name__ == "__main__":
     unittest.main()

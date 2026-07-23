@@ -171,6 +171,26 @@ body {
     justify-content: flex-end;
 }
 
+.model-config-secondary-grid {
+    align-items: end;
+}
+
+.model-config-meta {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    border: 1px solid rgba(59, 130, 246, 0.24);
+    border-radius: var(--radius-md);
+    color: #93c5fd;
+    background: rgba(59, 130, 246, 0.08);
+    font-size: 13px;
+}
+
+.model-config-actions {
+    gap: 10px;
+}
+
 /* Buttons */
 .btn {
     padding: 10px 20px;

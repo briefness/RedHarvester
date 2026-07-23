@@ -53,6 +53,18 @@ class ReviewPersistenceTests(unittest.TestCase):
 
         self.assertEqual(database.get_post_by_id(self.post_id)["ai_images"], replacement)
 
+    def test_model_config_overrides_persist_and_clear(self):
+        overrides = {
+            "base_url": "https://example.com/v1",
+            "api_key": "custom-key",
+            "model": "text-model"
+        }
+        database.save_model_config_overrides(overrides)
+        self.assertEqual(database.get_model_config_overrides(), overrides)
+
+        database.clear_model_config_overrides()
+        self.assertEqual(database.get_model_config_overrides(), {})
+
 
 if __name__ == "__main__":
     unittest.main()

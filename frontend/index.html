@@ -36,33 +36,48 @@
 
         <!-- 主界面容器 -->
         <main class="main-content">
-            <!-- 抓取/添加爆款栏 -->
-            <section class="section-card capture-card">
+            <!-- 模型配置栏 -->
+            <section class="section-card model-config-card">
                 <div class="section-title">
-                    <h2>📥 采集/录入爆款素材</h2>
-                    <span class="tip">（支持网页端模拟抓取或通过 Chrome 扩展在小红书一键提料）</span>
+                    <h2>⚙️ 模型配置</h2>
+                    <span class="tip">页面配置优先，未填写的字段使用 .env 默认值</span>
                 </div>
-                <form id="scrape-form" class="scrape-form">
+                <form id="model-config-form" class="model-config-form">
                     <div class="form-grid">
                         <div class="input-group">
-                            <label for="orig-title">爆款原标题</label>
-                            <input type="text" id="orig-title" placeholder="例如：新手必看！爆款小红书文案逆向拆解..." required>
+                            <label for="model-base-url">Base URL</label>
+                            <input type="url" id="model-base-url" autocomplete="url" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" required>
                         </div>
                         <div class="input-group">
-                            <label for="orig-author">爆款作者/点赞数</label>
-                            <input type="text" id="orig-author" placeholder="例如：博主老司机 / 3.8万赞">
+                            <label for="model-api-key">API Key</label>
+                            <input type="password" id="model-api-key" autocomplete="new-password" placeholder="留空则使用 .env 配置">
                         </div>
                     </div>
-                    <div class="input-group">
-                        <label for="orig-content">爆款原正文内容</label>
-                        <textarea id="orig-content" rows="3" placeholder="贴入小红书爆款帖子的原文案..." required></textarea>
+                    <div class="form-grid">
+                        <div class="input-group">
+                            <label for="model-name">文本模型（model）</label>
+                            <input type="text" id="model-name" placeholder="doubao-seed-2.0-pro" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="model-image-name">生图模型（image model）</label>
+                            <input type="text" id="model-image-name" placeholder="doubao-seedream-5.0-lite" required>
+                        </div>
                     </div>
-                    <div class="form-actions" style="gap:10px;">
-                        <button type="button" class="btn btn-secondary" id="btn-fill-demo">
-                            🎲 填入示例爆款
+                    <div class="form-grid model-config-secondary-grid">
+                        <div class="input-group">
+                            <label for="model-image-size">生图尺寸</label>
+                            <input type="text" id="model-image-size" placeholder="2K" required>
+                        </div>
+                        <div class="model-config-meta" id="model-config-meta" aria-live="polite">
+                            正在读取当前生效配置...
+                        </div>
+                    </div>
+                    <div class="form-actions model-config-actions">
+                        <button type="button" class="btn btn-secondary" id="btn-reset-model-config">
+                            ↺ 恢复 .env 默认
                         </button>
-                        <button type="submit" class="btn btn-primary" id="btn-collect">
-                            <span class="icon">✨</span> 录入爆款并立即用火山 AI 复刻
+                        <button type="submit" class="btn btn-primary" id="btn-save-model-config">
+                            <span class="icon">✓</span> 保存模型配置
                         </button>
                     </div>
                 </form>

@@ -5,6 +5,11 @@ import urllib.request
 from difflib import SequenceMatcher
 from typing import Any, Dict, List
 
+try:
+    from .database import get_model_config_overrides, save_model_config_overrides
+except ImportError:
+    from database import get_model_config_overrides, save_model_config_overrides
+
 
 class ReplicationError(RuntimeError):
     pass
@@ -38,6 +43,71 @@ VOLC_API_URL = f"{VOLC_BASE_URL.rstrip('/')}/chat/completions"
 VOLC_IMAGE_MODEL_NAME = os.getenv("VOLC_IMAGE_MODEL_NAME", "doubao-seedream-5.0-lite")
 VOLC_IMAGE_SIZE = os.getenv("VOLC_IMAGE_SIZE", "2K")
 VOLC_IMAGE_API_URL = f"{VOLC_BASE_URL.rstrip('/')}/images/generations"
+MODEL_CONFIG_KEYS = ("base_url", "api_key", "model", "image_model", "image_size")
+MASKED_API_KEY = "********"
+
+def _env_model_config() -> Dict[str, str]:
+    return {
+        "base_url": VOLC_BASE_URL,
+        "api_key": VOLC_API_KEY,
+        "model": VOLC_MODEL_NAME,
+        "image_model": VOLC_IMAGE_MODEL_NAME,
+        "image_size": VOLC_IMAGE_SIZE,
+    }
+
+def get_effective_model_config() -> Dict[str, str]:
+    config = _env_model_config()
+    for key, value in get_model_config_overrides().items():
+        if key in MODEL_CONFIG_KEYS and isinstance(value, str) and value.strip():
+            config[key] = value.strip()
+    return config
+
+def get_model_config_view() -> Dict[str, Any]:
+    overrides = get_model_config_overrides()
+    config = get_effective_model_config()
+    return {
+        "base_url": config["base_url"],
+        "model": config["model"],
+        "image_model": config["image_model"],
+        "image_size": config["image_size"],
+        "api_key_masked": MASKED_API_KEY if config["api_key"] else "",
+        "api_key_configured": bool(config["api_key"]),
+        "sources": {
+            key: "custom" if key in overrides and str(overrides[key]).strip() else "env"
+            for key in MODEL_CONFIG_KEYS
+        }
+    }
+
+def update_model_config(values: Dict[str, Any], reset: bool = False) -> Dict[str, Any]:
+    if reset:
+        save_model_config_overrides({})
+        return get_model_config_view()
+
+    if not isinstance(values, dict):
+        raise ReplicationError("模型配置格式不正确")
+
+    current = get_model_config_overrides()
+    for key in MODEL_CONFIG_KEYS:
+        if key not in values:
+            continue
+        value = values[key]
+        if not isinstance(value, str):
+            raise ReplicationError(f"模型配置字段 {key} 必须是字符串")
+        value = value.strip()
+        if key == "api_key" and value == MASKED_API_KEY:
+            continue
+        if not value:
+            current.pop(key, None)
+        else:
+            if len(value) > 2000:
+                raise ReplicationError(f"模型配置字段 {key} 过长")
+            current[key] = value
+
+    base_url = current.get("base_url") or VOLC_BASE_URL
+    if not base_url.startswith(("https://", "http://")):
+        raise ReplicationError("Base URL 必须以 http:// 或 https:// 开头")
+    save_model_config_overrides({key: current[key] for key in MODEL_CONFIG_KEYS if current.get(key)})
+    return get_model_config_view()
 
 SYSTEM_PROMPT = """你是小红书爆款内容策略师。你的工作不是照抄原文，也不是套用固定爆款模板，而是复用原文有效的内容机制，创作一篇事实可靠、表达全新的同赛道笔记。
 
@@ -185,10 +255,11 @@ def _call_volcengine(
     timeout_seconds: int = 45,
     attempts: int = 2
 ) -> str:
-    if not VOLC_API_KEY:
+    config = get_effective_model_config()
+    if not config["api_key"]:
         raise ReplicationError("未配置火山方舟 API Key，无法进行真实复刻")
     payload = {
-        "model": VOLC_MODEL_NAME,
+        "model": config["model"],
         "messages": messages,
         "temperature": temperature,
         "response_format": {"type": "json_object"},
@@ -197,9 +268,9 @@ def _call_volcengine(
     data = json.dumps(payload).encode("utf-8")
     for attempt in range(attempts):
         request = urllib.request.Request(
-            VOLC_API_URL,
+            f"{config['base_url'].rstrip('/')}/chat/completions",
             data=data,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {VOLC_API_KEY}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {config['api_key']}"},
             method="POST"
         )
         try:
@@ -219,19 +290,20 @@ def _call_volcengine(
 
 
 def _call_image_generation(prompt: str, timeout_seconds: int = 90) -> List[str]:
-    if not VOLC_API_KEY:
+    config = get_effective_model_config()
+    if not config["api_key"]:
         raise ReplicationError("未配置火山方舟 API Key，无法生成配图")
     payload = {
-        "model": VOLC_IMAGE_MODEL_NAME,
+        "model": config["image_model"],
         "prompt": prompt,
-        "size": VOLC_IMAGE_SIZE,
+        "size": config["image_size"],
         "response_format": "url",
         "watermark": False
     }
     request = urllib.request.Request(
-        VOLC_IMAGE_API_URL,
+        f"{config['base_url'].rstrip('/')}/images/generations",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {VOLC_API_KEY}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {config['api_key']}"},
         method="POST"
     )
     try:

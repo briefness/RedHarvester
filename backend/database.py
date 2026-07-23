@@ -33,6 +33,45 @@ def init_db():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    conn.commit()
+
+def get_model_config_overrides() -> Dict[str, str]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT value FROM app_settings WHERE key = ?", ("model_config",))
+    except sqlite3.OperationalError:
+        return {}
+    row = cursor.fetchone()
+    if not row:
+        return {}
+    try:
+        value = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+def save_model_config_overrides(overrides: Dict[str, str]) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+    ''', ("model_config", json.dumps(overrides, ensure_ascii=False)))
+    conn.commit()
+
+def clear_model_config_overrides() -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM app_settings WHERE key = ?", ("model_config",))
     conn.commit()
 
 def parse_post_row(row: sqlite3.Row) -> Dict[str, Any]:

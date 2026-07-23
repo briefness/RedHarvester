@@ -27,7 +27,13 @@ if BACKEND_DIR not in sys.path:
 FRONTEND_DIR = os.path.abspath(os.path.join(BACKEND_DIR, "..", "frontend"))
 
 from database import init_db, add_post, get_posts, get_post_by_id, update_ai_replication, update_human_review
-from ai_engine import DEFAULT_CREATIVE_PROMPT, ReplicationError, replicate_with_volcengine
+from ai_engine import (
+    DEFAULT_CREATIVE_PROMPT,
+    ReplicationError,
+    get_model_config_view,
+    replicate_with_volcengine,
+    update_model_config,
+)
 
 PORT = int(os.getenv("PORT", 8000))
 CONTENT_NOISE_MARKERS = (
@@ -178,6 +184,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if path == "/api/generation-config":
                 return self._send_json({"default_prompt": DEFAULT_CREATIVE_PROMPT})
 
+            if path == "/api/model-config":
+                return self._send_json(get_model_config_view())
+
             # 2. API: 获取帖子列表
             if path == "/api/posts" or path == "/api/posts/":
                 query = urllib.parse.parse_qs(parsed.query)
@@ -319,6 +328,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', 0))
             body_bytes = self.rfile.read(length) if length > 0 else b'{}'
             req_data = json.loads(body_bytes.decode('utf-8'))
+
+            if path == "/api/model-config":
+                if not isinstance(req_data, dict):
+                    return self._send_json({"error": "模型配置必须是 JSON 对象"}, 400)
+                try:
+                    config = update_model_config(req_data, reset=req_data.get("reset") is True)
+                except ReplicationError as error:
+                    return self._send_json({"error": str(error)}, 400)
+                return self._send_json(config)
 
             # API: 人工审核更新
             if path.startswith("/api/posts/") and path.endswith("/review"):
