@@ -11,4 +11,8 @@ services:
       - VOLC_API_KEY=${VOLC_API_KEY:-}
       - VOLC_BASE_URL=${VOLC_BASE_URL:-https://ark.cn-beijing.volces.com/api/plan/v3}
       - VOLC_MODEL_NAME=${VOLC_MODEL_NAME:-doubao-seed-2.0-pro}
+      - DATABASE_PATH=/app/data/data.db
+    volumes:
+      - ./backend/data.db:/app/data/data.db
+      - ./backend/generated_media:/app/backend/generated_media
     restart: always

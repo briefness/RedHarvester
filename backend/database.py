@@ -4,12 +4,13 @@ import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-# 内存 SQLite 数据库单例，保持全生命周期 open
-_MEMORY_CONN = sqlite3.connect(":memory:", check_same_thread=False)
-_MEMORY_CONN.row_factory = sqlite3.Row
+# Use a file-backed database so Docker and local restarts preserve scraped posts.
+DB_PATH = os.getenv("DATABASE_PATH", os.path.join(os.path.dirname(__file__), "data.db"))
+_DB_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
+_DB_CONN.row_factory = sqlite3.Row
 
 def get_db_connection():
-    return _MEMORY_CONN
+    return _DB_CONN
 
 def init_db():
     conn = get_db_connection()
@@ -98,12 +99,19 @@ def update_human_review(post_id: int, status: str, ai_title: str = None, ai_cont
     
     if ai_title is not None and ai_content is not None:
         tags_json = json.dumps(ai_tags or [])
-        images_json = json.dumps(ai_images or [])
-        cursor.execute('''
-            UPDATE posts 
-            SET status = ?, ai_title = ?, ai_content = ?, ai_tags = ?, ai_images = ?, updated_at = ?
-            WHERE id = ?
-        ''', (status, ai_title, ai_content, tags_json, images_json, now, post_id))
+        if ai_images is None:
+            cursor.execute('''
+                UPDATE posts
+                SET status = ?, ai_title = ?, ai_content = ?, ai_tags = ?, updated_at = ?
+                WHERE id = ?
+            ''', (status, ai_title, ai_content, tags_json, now, post_id))
+        else:
+            images_json = json.dumps(ai_images)
+            cursor.execute('''
+                UPDATE posts
+                SET status = ?, ai_title = ?, ai_content = ?, ai_tags = ?, ai_images = ?, updated_at = ?
+                WHERE id = ?
+            ''', (status, ai_title, ai_content, tags_json, images_json, now, post_id))
     else:
         cursor.execute('''
             UPDATE posts SET status = ?, updated_at = ? WHERE id = ?

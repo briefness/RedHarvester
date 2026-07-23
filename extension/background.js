@@ -1,5 +1,12 @@
 const BACKEND_URL = "http://localhost:8888/api";
 
+async function fetchJson(url, options) {
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `后端请求失败 (${response.status})`);
+    return data;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
     console.log("[RED AI Publisher Extension] 插件成功安装");
 });
@@ -41,19 +48,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "SCRAPE_SUBMIT") {
-        fetch(`${BACKEND_URL}/posts/scrape`, {
+        fetchJson(`${BACKEND_URL}/posts/scrape`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(request.payload)
         })
-            .then(res => res.json())
             .then(data => {
-                // 自动触发火山 AI 复刻
-                return fetch(`${BACKEND_URL}/posts/${data.post_id}/replicate`, { method: "POST" });
+                return fetchJson(`${BACKEND_URL}/posts/${data.post_id}/replicate`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({})
+                });
             })
-            .then(res => res.json())
             .then(data => sendResponse({ success: true, data }))
-            .catch(err => sendResponse({ success: false, error: err.toString() }));
+            .catch(err => sendResponse({ success: false, reason: err.message }));
         return true;
     }
 });

@@ -13,6 +13,16 @@ class ReplicationTests(unittest.TestCase):
             "今天教大家如何用3招逆向拆解对标账号：抓反常识、情绪价值钩子、金字塔结构列干货。"
         )
         self.valid_result = {
+            "content_dna": {
+                "niche": "小红书内容运营",
+                "target_reader": "缺少流量的新手创作者",
+                "core_pain": "无法拆解对标内容的有效机制",
+                "core_value": "获得可执行的三步拆解方法",
+                "verified_facts": ["方法包含反常识切入", "方法包含情绪钩子", "方法使用金字塔结构"],
+                "hook_mechanism": "直指低流量痛点并承诺给出方法",
+                "structure": ["提出痛点", "拆解三步方法", "引导讨论"],
+                "tone": "直接、实用、面向新手"
+            },
             "ai_title": "新手也能复制的高互动文案拆解方法",
             "ai_content": (
                 "小红书没有互动，问题往往不是更新次数少，而是开头没有立刻回应读者需求。\n\n"
@@ -37,9 +47,12 @@ class ReplicationTests(unittest.TestCase):
 
         messages = call_model.call_args.args[0]
         self.assertEqual(messages[0]["content"], ai_engine.SYSTEM_PROMPT)
-        self.assertIn("语气更克制", messages[1]["content"])
-        self.assertIn("只返回一个 JSON 对象", messages[1]["content"])
-        self.assertEqual(result["ai_images"], ["https://example.com/original.jpg"])
+        user_content = messages[1]["content"]
+        user_text = user_content[0]["text"] if isinstance(user_content, list) else user_content
+        self.assertIn("语气更克制", user_text)
+        self.assertIn("只返回一个 JSON 对象", user_text)
+        self.assertEqual(user_content[-1]["image_url"]["url"], "https://example.com/original.jpg")
+        self.assertEqual(result["ai_images"], [])
         self.assertEqual(result["engine"], "volcengine")
         self.assertEqual(result["ai_tags"][0], "#小红书运营")
 
@@ -59,6 +72,24 @@ class ReplicationTests(unittest.TestCase):
         self.assertIn("未通过校验", repair_messages[-1]["content"])
 
     @patch("backend.ai_engine._call_volcengine")
+    def test_image_led_note_extracts_facts_before_generation(self, call_model):
+        call_model.side_effect = [
+            "- 地点：上海\n- 预算：300万\n- 入学年份：2027年",
+            json.dumps(self.valid_result, ensure_ascii=False)
+        ]
+
+        ai_engine.replicate_with_volcengine(
+            self.original_title,
+            "#上海买房 #上海学区",
+            original_images=["https://example.com/original.jpg"]
+        )
+
+        self.assertEqual(call_model.call_count, 2)
+        generation_messages = call_model.call_args.args[0]
+        self.assertIn("【图片识别事实】", generation_messages[1]["content"])
+        self.assertIn("预算：300万", generation_messages[1]["content"])
+
+    @patch("backend.ai_engine._call_volcengine")
     def test_rejects_result_that_remains_invalid(self, call_model):
         invalid = {"ai_title": "太短", "ai_content": "内容太短", "ai_tags": []}
         call_model.return_value = json.dumps(invalid, ensure_ascii=False)
@@ -67,6 +98,69 @@ class ReplicationTests(unittest.TestCase):
             ai_engine.replicate_with_volcengine(self.original_title, self.original_content)
 
         self.assertEqual(call_model.call_count, 2)
+
+    @patch("backend.ai_engine._call_volcengine")
+    def test_unparseable_json_is_repaired_once(self, call_model):
+        call_model.side_effect = [
+            "这是一段没有 JSON 结构的模型输出。",
+            json.dumps(self.valid_result, ensure_ascii=False)
+        ]
+
+        result = ai_engine.replicate_with_volcengine(self.original_title, self.original_content)
+
+        self.assertEqual(result["ai_title"], self.valid_result["ai_title"])
+        self.assertEqual(call_model.call_count, 2)
+        repair_request = call_model.call_args.args[0]
+        self.assertIn("JSON", repair_request[-1]["content"])
+
+    @patch("backend.ai_engine.urllib.request.urlopen")
+    def test_transient_timeout_is_retried_once(self, urlopen):
+        valid_response = unittest.mock.MagicMock()
+        valid_response.__enter__.return_value.read.return_value = json.dumps({
+            "choices": [{"message": {"content": json.dumps(self.valid_result, ensure_ascii=False)}}]
+        }, ensure_ascii=False).encode("utf-8")
+        urlopen.side_effect = [TimeoutError("temporary timeout"), valid_response]
+
+        content = ai_engine._call_volcengine([{"role": "user", "content": "test"}])
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(json.loads(content)["ai_title"], self.valid_result["ai_title"])
+        request_payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(request_payload["thinking"], {"type": "disabled"})
+
+    @patch("backend.ai_engine.urllib.request.urlopen")
+    def test_image_generation_reads_url_response(self, urlopen):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "data": [{"url": "https://example.com/generated.jpg"}]
+        }).encode("utf-8")
+        urlopen.return_value = response
+
+        images = ai_engine._call_image_generation("生成一张原创配图")
+
+        self.assertEqual(images, ["https://example.com/generated.jpg"])
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/images/generations"))
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["model"], ai_engine.VOLC_IMAGE_MODEL_NAME)
+        self.assertEqual(payload["response_format"], "url")
+
+    @patch("backend.ai_engine._call_image_generation")
+    @patch("backend.ai_engine._call_volcengine")
+    def test_replicate_uses_generated_images_only(self, call_model, call_images):
+        call_model.return_value = json.dumps(self.valid_result, ensure_ascii=False)
+        call_images.return_value = ["https://example.com/generated.jpg"]
+
+        result = ai_engine.replicate_with_volcengine(
+            self.original_title,
+            self.original_content,
+            original_images=["https://example.com/original.jpg"],
+            generate_images=True
+        )
+
+        self.assertEqual(result["ai_images"], ["https://example.com/generated.jpg"])
+        self.assertNotIn("https://example.com/original.jpg", result["ai_images"])
+        call_images.assert_called_once()
 
 
 if __name__ == "__main__":

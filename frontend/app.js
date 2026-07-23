@@ -71,6 +71,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return localStorage.getItem(`generation-prompt-v2-${postId}`) ?? defaultPrompt;
     }
 
+    function renderImage(url, alt) {
+        const safeUrl = escapeHtml(url);
+        return `<span class="img-thumb-shell"><img src="${safeUrl}" class="img-thumb" alt="${alt}" loading="eager" decoding="async" referrerpolicy="no-referrer" onload="this.parentElement.classList.add('is-loaded')" onerror="this.parentElement.classList.add('is-error')"></span>`;
+    }
+
     async function replicatePost(postId, prompt, previousTitle = '', previousContent = '') {
         const res = await fetch(`${API_BASE}/posts/${postId}/replicate`, {
             method: 'POST',
@@ -131,7 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="orig-meta">作者/热度: ${escapeHtml(post.author || '匿名')} (${post.likes} 赞)</div>
                         <div class="orig-content">${escapeHtml(post.original_content)}</div>
                         <div class="image-preview-list">
-                            ${origImages.map(url => `<img src="${url}" class="img-thumb" alt="原图">`).join('')}
+                            ${origImages.map(url => renderImage(url, '原图')).join('')}
                         </div>
                     </div>
 
@@ -162,9 +167,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div class="editor-field">
                                 <label>配图建议</label>
-                                <div class="image-preview-list">
-                                    ${aiImages.map(url => `<img src="${url}" class="img-thumb" alt="AI配图">`).join('')}
+                                <div class="image-preview-list ai-image-preview-list">
+                                    ${aiImages.map(url => renderImage(url, 'AI配图')).join('')}
                                 </div>
+                                ${post.image_error ? `<p class="image-generation-status">${escapeHtml(post.image_error)}</p>` : (!aiImages.length ? '<p class="image-generation-status">尚未生成配图</p>' : '')}
                             </div>
                         `}
                     </div>
@@ -419,6 +425,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (titleInput) titleInput.value = aiData.ai_title || '';
             if (contentInput) contentInput.value = aiData.ai_content || '';
             if (tagsInput && aiData.ai_tags) tagsInput.value = aiData.ai_tags.join(" ");
+            const aiImageList = cardWrapper?.querySelector('.ai-image-preview-list');
+            if (aiImageList) {
+                aiImageList.innerHTML = (aiData.ai_images || []).map(url => renderImage(url, 'AI配图')).join('');
+                const status = aiImageList.parentElement.querySelector('.image-generation-status');
+                if (status) status.textContent = aiData.image_error || (!aiData.ai_images?.length ? '尚未生成配图' : '');
+            }
 
             if (cardWrapper) {
                 cardWrapper.style.transition = "box-shadow 0.4s ease, border-color 0.4s ease";
@@ -430,7 +442,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }, 2000);
             }
 
-            showToast('✨ 爆款结构复刻完成，已生成新的原创表达');
+            showToast(aiData.image_error
+                ? `✨ 文案已生成，但配图生成失败：${aiData.image_error}`
+                : '✨ 爆款结构复刻完成，已生成新的原创表达和原创配图');
             if (!titleInput || !contentInput) await loadData();
         } catch (err) {
             console.error("[triggerReplication Error]:", err);

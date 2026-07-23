@@ -65,38 +65,210 @@ function injectFloatingScraperBtn() {
         btn.style.boxShadow = "0 8px 24px rgba(255, 36, 66, 0.4)";
     });
 
-    btn.addEventListener("click", () => {
-        btn.innerHTML = `<span style="font-size:18px;">⏳</span> 正在采集并复刻中...`;
-        const data = extractPageContent();
-        
-        chrome.runtime.sendMessage({ action: "SCRAPE_SUBMIT", payload: data }, (res) => {
-            btn.innerHTML = `<span style="font-size:18px;">✅</span> 已送入 AI 复刻！请前往控制台审核`;
-            btn.style.background = "linear-gradient(135deg, #10b981, #059669)";
-            setTimeout(() => {
-                btn.innerHTML = `<span style="font-size:18px;">🔥</span> 提取爆款 + 火山 AI 复刻`;
-                btn.style.background = "linear-gradient(135deg, #ff2442, #e01b36)";
-            }, 3000);
-        });
+    btn.addEventListener("click", async () => {
+        btn.innerHTML = `<span style="font-size:18px;">⏳</span> 正在读取当前页爆款...`;
+        try {
+            const data = await extractCurrentOrTopLikedPost();
+            btn.innerHTML = `<span style="font-size:18px;">⏳</span> 正在采集并复刻中...`;
+            chrome.runtime.sendMessage({ action: "SCRAPE_SUBMIT", payload: data }, (res) => {
+                const succeeded = Boolean(res?.success);
+                btn.innerHTML = succeeded
+                    ? `<span style="font-size:18px;">✅</span> 已送入 AI 复刻！请前往控制台审核`
+                    : `<span style="font-size:18px;">⚠️</span> 复刻失败：${res?.reason || "请查看控制台"}`;
+                btn.style.background = succeeded
+                    ? "linear-gradient(135deg, #10b981, #059669)"
+                    : "linear-gradient(135deg, #f59e0b, #d97706)";
+                setTimeout(() => {
+                    btn.innerHTML = `<span style="font-size:18px;">🔥</span> 提取爆款 + 火山 AI 复刻`;
+                    btn.style.background = "linear-gradient(135deg, #ff2442, #e01b36)";
+                }, 5000);
+            });
+        } catch (error) {
+            btn.innerHTML = `<span style="font-size:18px;">⚠️</span> 采集失败：${error.message}`;
+        }
     });
 
     document.body.appendChild(btn);
 }
 
+function parseLikeCount(value) {
+    const match = String(value || "").replace(/,/g, "").trim().toLowerCase().match(/([\d.]+)\s*(万|w|千|k)?/);
+    if (!match) return 0;
+    const multiplier = match[2] === "万" || match[2] === "w" ? 10000 : match[2] === "千" || match[2] === "k" ? 1000 : 1;
+    return Math.round(Number(match[1]) * multiplier) || 0;
+}
+
+function isVisibleElement(element) {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+}
+
+function findDetailTitle() {
+    return [
+        document.querySelector("#detail-title"),
+        document.querySelector(".interaction-container #detail-title"),
+        document.querySelector(".note-scroller .note-content > .title"),
+        document.querySelector(".note-content > .title")
+    ].find(isVisibleElement) || null;
+}
+
+function extractNoteMediaSources(root) {
+    return Array.from(root.querySelectorAll(
+        ".note-slider img, .note-slider video[poster], .media-container img, .media-container video[poster]"
+    ))
+        .filter(media => !media.closest(".comments-container, .comment-container, .comment-item, [class*='comment-picture'], [class*='comment-image']"))
+        .map(media => media.tagName === "VIDEO"
+            ? media.getAttribute("poster")
+            : media.currentSrc || media.getAttribute("src") || media.getAttribute("data-src") || media.getAttribute("data-original") || media.getAttribute("data-lazy-src"))
+        .filter(src => src && !/avatar|userhead|profile/i.test(src))
+        .map(src => src.replace(/^http:/, "https:"))
+        .filter((src, index, all) => all.indexOf(src) === index);
+}
+
+function findTopLikedNoteCard() {
+    const rankedCards = Array.from(document.querySelectorAll("section.note-item")).map(card => {
+        const links = Array.from(card.querySelectorAll("a[href*='/explore/']"));
+        const titleLink = links.find(link => link.innerText.trim()) || links[0];
+        const likeElement = card.querySelector(".like-wrapper .count, .like-wrapper, [class*='like'] [class*='count']");
+        const cardLines = card.innerText.split("\n").map(line => line.trim()).filter(Boolean);
+        const likeText = likeElement?.textContent?.trim() || cardLines.at(-1) || "";
+        return { card, titleLink, likes: parseLikeCount(likeText) };
+    }).filter(item => item.titleLink && item.likes > 0);
+
+    rankedCards.sort((left, right) => right.likes - left.likes);
+    return rankedCards[0] || null;
+}
+
+async function extractListCard(cardData) {
+    const { card, titleLink, likes } = cardData;
+    const title = titleLink.innerText.trim();
+    if (!title) throw new Error("未识别到最高赞笔记标题");
+
+    const sourceUrl = titleLink.href || new URL(titleLink.getAttribute("href"), window.location.href).href;
+    if (!sourceUrl) throw new Error("未识别到最高赞笔记详情链接");
+
+    console.log(`[RED AI Scraper] 列表页选择最高赞笔记：${likes} 赞，正在读取详情 HTML`);
+
+    let response;
+    try {
+        response = await fetch(sourceUrl, {
+            credentials: "include",
+            headers: { Accept: "text/html,application/xhtml+xml" }
+        });
+    } catch (error) {
+        throw new Error(`最高赞笔记详情读取失败：${error.message}`);
+    }
+
+    if (!response.ok) {
+        throw new Error(`最高赞笔记详情暂时无法读取（HTTP ${response.status}）`);
+    }
+
+    const html = await response.text();
+    if (!html || html.includes("error_code=300031") || html.includes('"error_code":300031')) {
+        throw new Error("最高赞笔记详情暂时无法读取，小红书返回了不可浏览页面");
+    }
+
+    const detailDocument = new DOMParser().parseFromString(html, "text/html");
+    const cleanText = text => Array.from(new Set((text || "").split("\n").map(line => line.trim()).filter(Boolean))).join("\n");
+    const initialStateScript = Array.from(detailDocument.querySelectorAll("script"))
+        .find(script => script.textContent.trim().startsWith("window.__INITIAL_STATE__="));
+    let noteState = null;
+    if (initialStateScript) {
+        try {
+            const serializedState = initialStateScript.textContent.trim()
+                .slice("window.__INITIAL_STATE__=".length)
+                .replace(/;\s*$/, "")
+                .replace(/\bundefined\b/g, "null");
+            const initialState = JSON.parse(serializedState);
+            noteState = Object.values(initialState?.note?.noteDetailMap || {})
+                .find(detail => detail?.note)?.note || null;
+        } catch (error) {
+            console.warn("[RED AI Scraper] 初始化数据解析失败，将使用详情 DOM：", error.message);
+        }
+    }
+    const textFrom = selectors => selectors.map(selector => detailDocument.querySelector(selector)?.textContent || "")
+        .map(cleanText)
+        .filter(Boolean)
+        .sort((left, right) => right.length - left.length)[0] || "";
+    const detailTitle = cleanText(noteState?.title) || textFrom([
+        "#detail-title",
+        ".interaction-container #detail-title",
+        ".note-scroller .note-content > .title",
+        ".note-content > .title"
+    ]) || title;
+    const detailContent = cleanText(noteState?.desc) || textFrom([
+        "#detail-desc",
+        ".note-container #detail-desc",
+        "#note-page-container #detail-desc",
+        ".note-content #detail-desc",
+        ".note-container .desc",
+        "#note-page-container .desc",
+        ".note-content .desc"
+    ]);
+    if (!detailContent || detailContent === detailTitle) {
+        throw new Error("最高赞笔记详情暂时无法读取，未找到完整正文");
+    }
+
+    const detailRoot = detailDocument.querySelector(".note-container, #note-page-container, [class*='note-detail']") || detailDocument;
+    const stateImageSources = Array.isArray(noteState?.imageList) ? noteState.imageList
+        .map(image => image.urlDefault || image.urlPre || image.url || image.infoList?.find(item => item.imageScene === "WB_DFT")?.url || image.infoList?.[0]?.url)
+        .filter(Boolean)
+        .map(src => src.replace(/^http:/, "https:")) : [];
+    const domImageSources = extractNoteMediaSources(detailRoot);
+    const mediaSources = (stateImageSources.length ? stateImageSources : domImageSources)
+        .filter((src, index, all) => all.indexOf(src) === index);
+    const coverImage = detailDocument.querySelector("meta[property='og:image']")?.getAttribute("content");
+    if (!mediaSources.length && coverImage) mediaSources.push(coverImage.replace(/^http:/, "https:"));
+
+    const detailAuthor = cleanText(noteState?.user?.nickname) || textFrom([
+        ".author-container .name",
+        ".author-container .nickname",
+        ".user-name",
+        ".username",
+        "a[href*='/user/profile/'] .name"
+    ]) || card.querySelector("a[href*='/user/profile/']")?.innerText.trim() || "小红书爆款达人";
+    const detailLikeText = textFrom([
+        ".interact-container .like-wrapper .count",
+        ".like-wrapper .count",
+        ".like-wrapper"
+    ]);
+    const detailLikes = parseLikeCount(noteState?.interactInfo?.likedCount || detailLikeText) || likes;
+
+    return {
+        title: detailTitle,
+        content: detailContent,
+        author: detailAuthor,
+        likes: detailLikes,
+        images: mediaSources,
+        source_url: sourceUrl
+    };
+}
+
+async function extractCurrentOrTopLikedPost() {
+    if (findDetailTitle()) return extractPageContent();
+
+    const topLiked = findTopLikedNoteCard();
+    if (!topLiked) throw new Error("当前页面未识别到带点赞数的笔记卡片");
+
+    return extractListCard(topLiked);
+}
+
 // 监听来自 Extension Background / Popup 的指令
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "SCRAPE_CURRENT_PAGE") {
-        try {
-            const data = extractPageContent();
-            if (data) {
+        (async () => {
+            try {
+                const data = await extractCurrentOrTopLikedPost();
                 chrome.runtime.sendMessage({ action: "SCRAPE_SUBMIT", payload: data }, (res) => {
-                    sendResponse({ success: true, data });
+                    sendResponse(res?.success
+                        ? { success: true, data }
+                        : { success: false, reason: res?.reason || "复刻失败，请查看控制台" });
                 });
-            } else {
-                sendResponse({ success: false, reason: "无法在当前页面提取到爆款图文 DOM" });
+            } catch (error) {
+                sendResponse({ success: false, reason: error.message });
             }
-        } catch (e) {
-            sendResponse({ success: false, reason: e.message });
-        }
+        })();
         return true;
     }
 
@@ -116,81 +288,68 @@ function extractPageContent() {
 
     // 1. 解析标题 (严格过滤 "猜你想搜" 等 UI 干扰词)
     const invalidTitles = ["猜你想搜", "相关搜索", "全部评论", "小红书", "搜索", "评论"];
-    
-    let titleEl = document.querySelector("#detail-title, .note-container #detail-title, .note-content #detail-title, .title-container .title");
-    let title = titleEl ? titleEl.innerText.trim() : "";
+    const titleEl = findDetailTitle();
+    if (!titleEl) throw new Error("请先打开具体笔记详情后重试");
+    const title = titleEl.innerText.trim();
+    if (!title || invalidTitles.some(keyword => title.includes(keyword))) throw new Error("未识别到有效笔记标题");
+    const noteRoot = titleEl.closest(".note-container, #note-page-container, [class*='note-detail']") || document;
 
-    if (!title || invalidTitles.some(k => title.includes(k))) {
-        // 尝试备用查找：寻找详情弹窗/容器内的标题节点
-        const candidates = Array.from(document.querySelectorAll("#detail-title, .title, h1, div[class*='title']"));
-        for (const el of candidates) {
-            const txt = el.innerText.trim();
-            if (txt && txt.length > 3 && !invalidTitles.some(k => txt.includes(k))) {
-                title = txt;
-                break;
-            }
-        }
-    }
-
-    // 2. 解析正文描述
-    let content = document.querySelector("#detail-desc, .note-container .desc, #note-page-container .desc, .note-content .desc, .note-text, .desc")?.innerText.trim();
-    if (!content) {
-        const descEl = document.querySelector("#detail-desc span, .desc span, .note-content span");
-        if (descEl) content = descEl.innerText.trim();
-    }
+    // 2. 解析正文描述，只在笔记详情容器内查找，避免误抓页面页脚
+    const footerMarkers = ["ICP备", "营业执照", "公网安备", "增值电信业务经营许可证", "举报电话", "网络文化经营许可证", "网信算备"];
+    const cleanContent = text => {
+        const seen = new Set();
+        return (text || "").split("\n").map(line => line.trim()).filter(line => {
+            if (!line || footerMarkers.some(marker => line.includes(marker)) || seen.has(line)) return false;
+            seen.add(line);
+            return true;
+        }).join("\n");
+    };
+    const contentSelectors = [
+        "#detail-desc",
+        ".note-container #detail-desc",
+        "#note-page-container #detail-desc",
+        ".note-content #detail-desc",
+        ".note-container .desc",
+        "#note-page-container .desc",
+        ".note-content .desc"
+    ];
+    const contentCandidates = contentSelectors.flatMap(selector => Array.from(noteRoot.querySelectorAll(selector)))
+        .map(element => cleanContent(element.innerText))
+        .filter(text => text.length >= 8);
+    let content = contentCandidates.sort((left, right) => right.length - left.length)[0] || "";
 
     // 3. 解析作者
-    let author = document.querySelector(".author-container .name, .user-name, .author-container .nickname, .username, .name")?.innerText.trim();
+    let author = noteRoot.querySelector(".author-container .name")?.innerText.trim()
+        || noteRoot.querySelector(".author-container .nickname")?.innerText.trim()
+        || noteRoot.querySelector(".user-name, .username")?.innerText.trim();
     if (!author) {
-        const authorEl = document.querySelector("a[href*='/user/profile/'] .name, .author-container a");
+        const authorEl = noteRoot.querySelector("a[href*='/user/profile/'] .name, .author-container a");
         if (authorEl) author = authorEl.innerText.trim();
     }
     if (!author) author = "小红书爆款达人";
 
     // 4. 解析点赞数
-    let likes = 8888;
-    const likeEl = document.querySelector(".interact-container .like-wrapper .count, .like-wrapper .count, .like-wrapper");
-    if (likeEl) {
-        const numText = likeEl.innerText.replace(/[^0-9.]/g, '');
-        if (numText) {
-            likes = parseFloat(numText);
-            if (likeEl.innerText.includes("万")) likes = Math.floor(likes * 10000);
-        }
-    }
+    const likeEl = noteRoot.querySelector(".interact-container .like-wrapper .count")
+        || noteRoot.querySelector(".interact-container .like-wrapper");
+    const likes = parseLikeCount(likeEl?.innerText || likeEl?.textContent || "");
 
     // 5. 解析图片 URL
-    let images = [];
-    const imgEls = document.querySelectorAll(".note-slider img, .media-container img, .swiper-slide img, img[src*='sns-webpic'], img[src*='xiaohongshu.com']");
-    imgEls.forEach(img => {
-        const src = img.src || img.getAttribute("data-src");
-        if (src && !src.includes("avatar") && !images.includes(src)) {
-            images.push(src);
-        }
-    });
-
-    // 如果未抓到图片，使用通用优质图片
-    if (images.length === 0) {
-        images = [
-            "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=800",
-            "https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=800"
-        ];
-    }
+    const images = extractNoteMediaSources(noteRoot);
 
     // 6. 兜底逻辑：若选择器均失效，提取页面标题与文案
-    if (!title) {
-        title = document.title.replace("- 小红书", "").replace("小红书", "").trim();
-    }
     if (!content) {
-        const pList = Array.from(document.querySelectorAll("p, span")).map(el => el.innerText.trim()).filter(t => t.length > 20);
-        content = pList.length > 0 ? pList.slice(0, 3).join("\n") : "这篇小红书笔记的互动量极高，里面包含了很多关于引流与营销的干货知识！";
+        const metaDescription = cleanContent(document.querySelector('meta[name="description"]')?.content || "");
+        content = metaDescription || "";
     }
 
+    if (!content) throw new Error("未识别到有效笔记正文，请打开具体笔记详情后重试");
+
     const scrapedData = {
-        title: title || "小红书爆款笔记",
-        content: content || "爆款笔记内容摘要...",
+        title,
+        content,
         author: author,
         likes: likes,
-        images: images.slice(0, 4),
+        images,
         source_url: window.location.href
     };
 
@@ -245,10 +404,13 @@ async function executePublishWorkflow() {
         showNotificationBanner("⏳ [RED AI Studio] (借鉴 XiaohongshuSkills 机制) 正在尝试一键自动挂载图文素材文件...");
         console.log("[RED AI Publisher] 处于素材选择页，正在发送 File 对象注入小红书上传通道...");
         
-        // 抓取或合成优质素材配图
-        const mediaUrls = (task.ai_images && task.ai_images.length > 0) ? task.ai_images : (task.original_images || [
-            "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800"
-        ]);
+        // 发布阶段只允许使用 AI 生成图，避免生图失败时误发原素材。
+        const mediaUrls = Array.isArray(task.ai_images) ? task.ai_images.filter(Boolean) : [];
+        if (mediaUrls.length === 0) {
+            const reason = "当前任务没有可发布的 AI 配图，请先重新生成配图后再发布";
+            showNotificationBanner(`⚠️ [RED AI Studio] ${reason}`, "#ef4444");
+            return { success: false, reason };
+        }
 
         // 执行异步图片流下载与 DataTransfer 注入
         await autoUploadImageFiles(mediaUrls);
@@ -390,35 +552,85 @@ async function simulateHumanType(element, text) {
         
         // 1. 全选原有占位节点
         document.execCommand('selectAll', false, null);
-        
-        // 2. 逐段拟人化插入内容 (结合段落思维停顿 + 高斯物理打字间隔)
-        const lines = text.split('\n');
-        for (let idx = 0; idx < lines.length; idx++) {
-            const line = lines[idx];
-            if (line) {
-                // 逐字按键派发与微时延
-                for (let charIdx = 0; charIdx < line.length; charIdx++) {
-                    const char = line[charIdx];
-                    document.execCommand('insertText', false, char);
-                    element.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
-                    
-                    // 拟人按键抖动时延 (40ms ~ 90ms)
-                    const jitter = Math.floor(Math.random() * 50) + 40;
-                    await new Promise(r => setTimeout(r, jitter));
-                }
-            }
-            if (idx < lines.length - 1) {
-                document.execCommand('insertParagraph', false, null);
-                element.dispatchEvent(new Event('input', { bubbles: true }));
-                // 段落之间的人类思考停顿 (180ms ~ 400ms)
-                const linePause = Math.floor(Math.random() * 220) + 180;
-                await new Promise(r => setTimeout(r, linePause));
-            }
+
+        // 2. 按 #话题切段，逐个输入并选择候选弹窗首项
+        const topicPattern = /#[\p{L}\p{N}_\u4e00-\u9fff]+/gu;
+        let cursor = 0;
+        for (const match of text.matchAll(topicPattern)) {
+            await typeContentSegment(element, text.slice(cursor, match.index));
+            await typeContentSegment(element, match[0]);
+            await selectFirstTopicSuggestion();
+            cursor = match.index + match[0].length;
         }
-        
+        await typeContentSegment(element, text.slice(cursor));
+
         element.dispatchEvent(new Event('change', { bubbles: true }));
         element.dispatchEvent(new Event('blur', { bubbles: true }));
     }
+}
+
+async function typeContentSegment(element, text) {
+    const lines = text.split('\n');
+    for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx];
+        for (let charIdx = 0; charIdx < line.length; charIdx++) {
+            const char = line[charIdx];
+            document.execCommand('insertText', false, char);
+            element.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
+            const jitter = Math.floor(Math.random() * 50) + 40;
+            await new Promise(resolve => setTimeout(resolve, jitter));
+        }
+        if (idx < lines.length - 1) {
+            document.execCommand('insertParagraph', false, null);
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            const linePause = Math.floor(Math.random() * 220) + 180;
+            await new Promise(resolve => setTimeout(resolve, linePause));
+        }
+    }
+}
+
+function getVisibleTopicSuggestions() {
+    const selectors = [
+        ".tippy-box .item",
+        "[role='listbox'] [role='option']",
+        "[class*='topic'] [class*='item']",
+        "[class*='suggest'] [class*='item']"
+    ];
+    return selectors.flatMap(selector => Array.from(document.querySelectorAll(selector)))
+        .filter((option, index, all) => all.indexOf(option) === index)
+        .filter(option => isVisibleElement(option) && option.innerText.trim().startsWith('#'));
+}
+
+async function waitForTopicSuggestion(timeout = 1800) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        const suggestion = getVisibleTopicSuggestions()[0];
+        if (suggestion) return suggestion;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return null;
+}
+
+async function waitForTopicSuggestionClose(timeout = 800) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if (getVisibleTopicSuggestions().length === 0) return true;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return getVisibleTopicSuggestions().length === 0;
+}
+
+async function selectFirstTopicSuggestion() {
+    const suggestion = await waitForTopicSuggestion();
+    if (!suggestion) {
+        console.warn("[RED AI Publisher] 未出现话题候选弹窗，保留当前话题文本继续输入");
+        return false;
+    }
+
+    console.log("[RED AI Publisher] 选择话题候选首项:", suggestion.innerText.trim());
+    await triggerFullClick(suggestion);
+    await waitForTopicSuggestionClose();
+    return true;
 }
 
 /** 页面防风控悬浮模拟器（展示拟人化填充全过程与一键发布） */
@@ -639,7 +851,7 @@ function tryClickTextImgBtn() {
 
 /** 触发【上传图片/文字配图】流程：自动注入素材或一键唤醒文字配图展开编辑框 */
 async function tryTriggerImageUpload(task) {
-    const imageUrls = (task && (task.ai_images || task.original_images)) || [];
+    const imageUrls = Array.isArray(task?.ai_images) ? task.ai_images.filter(Boolean) : [];
     
     // 1. 尝试定位页面现有的 file input 节点
     let fileInput = document.querySelector("input[type='file'][accept*='image'], input[type='file']");

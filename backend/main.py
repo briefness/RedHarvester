@@ -11,6 +11,12 @@ import json
 import sys
 import os
 import urllib.parse
+import urllib.error
+import urllib.request
+import base64
+import binascii
+import mimetypes
+import secrets
 
 # 1. 根治模块导入路径：强行锁定 backend 所在目录绝对路径至 sys.path 首位
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +30,65 @@ from database import init_db, add_post, get_posts, get_post_by_id, update_ai_rep
 from ai_engine import DEFAULT_CREATIVE_PROMPT, ReplicationError, replicate_with_volcengine
 
 PORT = int(os.getenv("PORT", 8000))
+CONTENT_NOISE_MARKERS = (
+    "ICP备", "营业执照", "公网安备", "增值电信业务经营许可证", "医疗器械网络交易服务",
+    "互联网药品信息服务资格证书", "违法不良信息举报电话", "网络文化经营许可证", "网信算备"
+)
+GENERATED_MEDIA_DIR = os.path.join(BACKEND_DIR, "generated_media")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8888").rstrip("/")
+os.makedirs(GENERATED_MEDIA_DIR, exist_ok=True)
+
+
+def persist_generated_images(post_id, image_urls):
+    """Persist temporary Seedream URLs before their signed links expire."""
+    persisted = []
+    created_files = []
+    try:
+        for index, image_url in enumerate(image_urls or []):
+            content_type = "image/jpeg"
+            if isinstance(image_url, str) and image_url.startswith("data:image/"):
+                header, encoded = image_url.split(",", 1)
+                content_type = header[5:].split(";", 1)[0]
+                image_bytes = base64.b64decode(encoded, validate=True)
+            elif isinstance(image_url, str) and image_url.startswith(("https://", "http://")):
+                request = urllib.request.Request(image_url, headers={"User-Agent": "RED-AI-Studio/1.0"})
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    content_type = response.headers.get_content_type()
+                    image_bytes = response.read(20 * 1024 * 1024 + 1)
+            else:
+                raise ReplicationError("生图返回了不支持的图片地址")
+
+            if not content_type.startswith("image/"):
+                raise ReplicationError("生图返回内容不是图片")
+            if not image_bytes or len(image_bytes) > 20 * 1024 * 1024:
+                raise ReplicationError("生成图片大小超出限制")
+
+            extension = mimetypes.guess_extension(content_type) or ".jpg"
+            filename = f"{post_id}-{index}-{secrets.token_hex(8)}{extension}"
+            filepath = os.path.join(GENERATED_MEDIA_DIR, filename)
+            with open(filepath, "wb") as media_file:
+                media_file.write(image_bytes)
+            created_files.append(filepath)
+            persisted.append(f"{PUBLIC_BASE_URL}/media/generated/{filename}")
+    except (ValueError, binascii.Error, urllib.error.URLError, TimeoutError, OSError) as error:
+        for filepath in created_files:
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+        raise ReplicationError(f"生成图片保存失败：{error}") from error
+    return persisted
+
+
+def clean_scraped_content(content):
+    if not isinstance(content, str):
+        return ""
+    lines = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line and line not in lines and not any(marker in line for marker in CONTENT_NOISE_MARKERS):
+            lines.append(line)
+    return "\n".join(lines)
 
 # 3. 初始化数据库与种子数据
 init_db()
@@ -135,6 +200,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 approved_posts = get_posts(status="APPROVED")
                 return self._send_json({"count": len(approved_posts), "posts": approved_posts})
 
+            if path.startswith("/media/generated/"):
+                filename = urllib.parse.unquote(path.removeprefix("/media/generated/"))
+                if not filename or "/" in filename or "\\" in filename or filename.startswith("."):
+                    return self.send_error(404, "Not Found")
+                filepath = os.path.join(GENERATED_MEDIA_DIR, filename)
+                mime_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
+                return self._send_file(filepath, mime_type)
+
             # 5. 静态前端托管
             if path == "/" or path == "/index.html":
                 return self._send_file(os.path.join(FRONTEND_DIR, "index.html"), "text/html; charset=utf-8")
@@ -163,7 +236,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             # 1. API: 录入/抓取爆款
             if path == "/api/posts/scrape":
                 title = req_data.get("title", "")
-                content = req_data.get("content", "")
+                content = clean_scraped_content(req_data.get("content", ""))
                 author = req_data.get("author", "匿名")
                 likes = req_data.get("likes", 8888)
                 images = req_data.get("images", [])
@@ -171,8 +244,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
                 if not isinstance(title, str) or not title.strip():
                     return self._send_json({"error": "title is required"}, 400)
-                if not isinstance(content, str) or not content.strip():
-                    return self._send_json({"error": "content is required"}, 400)
+                if len(content) < 8:
+                    return self._send_json({"error": "未识别到有效笔记正文，请打开具体笔记详情后重试"}, 400)
 
                 post_id = add_post(title, content, author, likes, images, source_url)
                 return self._send_json({"status": "success", "post_id": post_id, "message": "爆款录入成功"})
@@ -208,9 +281,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                             custom_prompt=custom_prompt,
                             previous_title=previous_title if previous_title is not None else post.get("ai_title") or "",
                             previous_content=previous_content if previous_content is not None else post.get("ai_content") or "",
-                            original_images=post.get("original_images") or []
+                            original_images=post.get("original_images") or [],
+                            generate_images=req_data.get("generate_images", True) is True
                         )
+                        if ai_res.get("ai_images"):
+                            try:
+                                ai_res["ai_images"] = persist_generated_images(post_id, ai_res["ai_images"])
+                            except ReplicationError as error:
+                                ai_res["ai_images"] = []
+                                ai_res["image_error"] = str(error)
                     except ReplicationError as error:
+                        print(f"[ReplicationError] post_id={post_id}: {error}", flush=True)
                         return self._send_json({"error": str(error), "engine": "volcengine"}, 502)
                     update_ai_replication(post_id, ai_res["ai_title"], ai_res["ai_content"], ai_res["ai_tags"], ai_res["ai_images"])
                     return self._send_json({"status": "success", "data": ai_res})
