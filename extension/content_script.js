@@ -168,17 +168,17 @@ function extractNoteMediaSources(root) {
 
 function findTopLikedNoteCard() {
     const rankedCards = Array.from(document.querySelectorAll("section.note-item")).map(card => {
-        const links = Array.from(card.querySelectorAll("a[href*='/explore/']"));
-        const titleLink = links.find(link => link.innerText.trim())
-            || links.find(link => isVisibleElement(link) && link.href.includes("xsec_token="))
-            || links.find(link => link.href.includes("xsec_token="))
+        const links = Array.from(card.querySelectorAll("a[href*='/explore/'], a[href*='/search_result/']"));
+        const titleLink = links.find(link => link.innerText.trim());
+        const sourceLink = links.find(link => link.href.includes("xsec_token="))
+            || titleLink
             || links.find(isVisibleElement)
             || links[0];
         const likeElement = card.querySelector(".like-wrapper .count, .like-wrapper, [class*='like'] [class*='count']");
         const cardLines = card.innerText.split("\n").map(line => line.trim()).filter(Boolean);
         const likeText = likeElement?.textContent?.trim() || cardLines.at(-1) || "";
-        return { card, titleLink, likes: parseLikeCount(likeText) };
-    }).filter(item => item.titleLink && item.likes > 0);
+        return { card, sourceLink, titleLink, likes: parseLikeCount(likeText) };
+    }).filter(item => item.sourceLink && item.likes > 0);
 
     rankedCards.sort((left, right) => right.likes - left.likes);
     return rankedCards[0] || null;
@@ -197,12 +197,12 @@ function sendRuntimeMessage(message) {
 }
 
 async function extractListCard(cardData) {
-    const { card, titleLink, likes } = cardData;
-    const sourceUrl = titleLink.href || new URL(titleLink.getAttribute("href"), window.location.href).href;
+    const { card, sourceLink, titleLink, likes } = cardData;
+    const sourceUrl = sourceLink.href || new URL(sourceLink.getAttribute("href"), window.location.href).href;
     if (!sourceUrl) throw new Error("未识别到最高赞笔记详情链接");
 
     const fallback = {
-        title: titleLink.innerText.trim(),
+        title: titleLink?.innerText.trim() || "",
         author: card.querySelector("a[href*='/user/profile/']")?.innerText.trim() || "小红书爆款达人",
         likes,
         source_url: sourceUrl

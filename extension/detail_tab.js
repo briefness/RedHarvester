@@ -6,7 +6,8 @@
     function assertAllowedDetailUrl(sourceUrl) {
         const url = new URL(sourceUrl);
         const isXiaohongshu = url.hostname === 'xiaohongshu.com' || url.hostname.endsWith('.xiaohongshu.com');
-        if (url.protocol !== 'https:' || !isXiaohongshu || !url.pathname.startsWith('/explore/')) {
+        const isDetailPath = /^\/(?:explore|search_result)\/[^/]+\/?$/.test(url.pathname);
+        if (url.protocol !== 'https:' || !isXiaohongshu || !isDetailPath) {
             throw new Error('只允许读取小红书笔记详情链接');
         }
         return url.href;

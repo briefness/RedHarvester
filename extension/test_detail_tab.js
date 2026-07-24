@@ -44,6 +44,16 @@ test('loads detail in an inactive tab and closes it after scraping', async () =>
     assert.deepEqual(calls.at(-1), ['remove', 42]);
 });
 
+test('preserves the search result token when opening a note detail', async () => {
+    const { calls, chromeApi } = createChromeMock();
+    const scrapeDetailTab = createDetailTabScraper(chromeApi);
+    const sourceUrl = 'https://www.xiaohongshu.com/search_result/note-id?xsec_token=token&xsec_source=pc_search';
+
+    await scrapeDetailTab(sourceUrl, {});
+
+    assert.deepEqual(calls[0], ['create', { active: false, url: sourceUrl }]);
+});
+
 test('waits for the detail tab to finish loading before scraping', async () => {
     const { calls, chromeApi, listeners } = createChromeMock({ initialStatus: 'loading' });
     const scrapeDetailTab = createDetailTabScraper(chromeApi, 1000);
