@@ -72,6 +72,26 @@ class ReplicationTests(unittest.TestCase):
         self.assertIn("未通过校验", repair_messages[-1]["content"])
 
     @patch("backend.ai_engine._call_volcengine")
+    def test_long_single_paragraph_is_repaired_with_dynamic_layout(self, call_model):
+        unformatted = dict(self.valid_result)
+        unformatted["ai_content"] = (
+            "很多内容本身包含开场结论、具体方法、补充说明和结尾互动，但如果模型把所有信息连续写在同一段里，"
+            "读者就很难快速扫描重点，也无法区分哪些是结论、哪些是操作步骤、哪些是需要特别注意的限制条件。"
+            "这类较长正文应该根据内容关系选择自然分段、步骤列表或重点清单，而不是机械地堆成一整段文字。"
+        )
+        call_model.side_effect = [
+            json.dumps(unformatted, ensure_ascii=False),
+            json.dumps(self.valid_result, ensure_ascii=False)
+        ]
+
+        result = ai_engine.replicate_with_volcengine(self.original_title, self.original_content)
+
+        self.assertEqual(call_model.call_count, 2)
+        self.assertEqual(result["ai_content"], self.valid_result["ai_content"])
+        repair_messages = call_model.call_args.args[0]
+        self.assertIn("排版", repair_messages[-1]["content"])
+
+    @patch("backend.ai_engine._call_volcengine")
     def test_image_led_note_extracts_facts_before_generation(self, call_model):
         call_model.side_effect = [
             "- 地点：上海\n- 预算：300万\n- 入学年份：2027年",
