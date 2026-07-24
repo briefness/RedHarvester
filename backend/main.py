@@ -224,6 +224,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 return self._send_file(os.path.join(FRONTEND_DIR, "style.css"), "text/css; charset=utf-8")
             elif path == "/static/app.js" or path == "/app.js":
                 return self._send_file(os.path.join(FRONTEND_DIR, "app.js"), "application/javascript; charset=utf-8")
+            elif path == "/static/post_diff.js" or path == "/post_diff.js":
+                return self._send_file(os.path.join(FRONTEND_DIR, "post_diff.js"), "application/javascript; charset=utf-8")
 
             self.send_error(404, "Not Found")
         except Exception as e:

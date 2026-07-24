@@ -28,7 +28,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const toast = document.getElementById('toast');
     let defaultPrompt = '';
+    let renderedPosts = [];
+    let hasRenderedPosts = false;
     const replicatingPostIds = new Set();
+    const renderedNodeVersions = new WeakMap();
 
     // Tab 切换逻辑
     const tabBtns = document.querySelectorAll('.tab-btn');
@@ -60,8 +63,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(`${API_BASE}/posts`);
             if (!res.ok) throw new Error('网络请求失败');
             const posts = await res.json();
+            const changes = PostDiff.diffPosts(renderedPosts, posts);
 
+            if (hasRenderedPosts && !changes.hasChanges) return;
             renderDashboard(posts);
+            renderedPosts = posts;
+            hasRenderedPosts = true;
         } catch (err) {
             console.error('获取数据失败:', err);
             showToast('⚠️ 无法连接后端API，请检查后端运行状态');
@@ -116,6 +123,53 @@ document.addEventListener('DOMContentLoaded', () => {
         return response.data;
     }
 
+    function createElement(html) {
+        const template = document.createElement('template');
+        template.innerHTML = html.trim();
+        return template.content.firstElementChild;
+    }
+
+    function reconcilePostList(container, posts, renderPost, emptyHtml) {
+        const existingById = new Map(Array.from(container.children)
+            .filter(element => element.dataset.postId)
+            .map(element => [element.dataset.postId, element]));
+
+        if (posts.length === 0) {
+            if (!container.querySelector(':scope > [data-empty-state]')) {
+                const emptyState = createElement(emptyHtml);
+                emptyState.dataset.emptyState = 'true';
+                container.replaceChildren(emptyState);
+            }
+            return;
+        }
+
+        Array.from(container.children)
+            .filter(element => !element.dataset.postId)
+            .forEach(element => element.remove());
+
+        const nextIds = new Set(posts.map(post => String(post.id)));
+        existingById.forEach((element, id) => {
+            if (!nextIds.has(id)) element.remove();
+        });
+
+        posts.forEach((post, index) => {
+            const id = String(post.id);
+            const version = PostDiff.postVersion(post);
+            let element = existingById.get(id);
+
+            if (!element || renderedNodeVersions.get(element) !== version) {
+                const nextElement = createElement(renderPost(post));
+                nextElement.dataset.postId = id;
+                renderedNodeVersions.set(nextElement, version);
+                if (element) element.replaceWith(nextElement);
+                element = nextElement;
+            }
+
+            const elementAtIndex = container.children[index];
+            if (elementAtIndex !== element) container.insertBefore(element, elementAtIndex || null);
+        });
+    }
+
     function renderDashboard(posts) {
         const reviewPosts = posts.filter(p => p.status === 'AI_GENERATED' || p.status === 'SCRAPED');
         const queuePosts = posts.filter(p => p.status === 'APPROVED' || p.status === 'PUBLISHED');
@@ -138,12 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 渲染待审核列表
     function renderReviewList(posts) {
-        if (posts.length === 0) {
-            reviewCardsList.innerHTML = `<div class="empty-state" style="text-align:center; padding:40px; color:#9ca3af;">🎉 暂无待审核卡片，你可以输入或抓取新爆款进行 AI 复刻！</div>`;
-            return;
-        }
-
-        reviewCardsList.innerHTML = posts.map(post => {
+        reconcilePostList(reviewCardsList, posts, post => {
             const aiTagsStr = (post.ai_tags || []).join(' ');
             const aiImages = post.ai_images || [];
             const origImages = post.original_images || [];
@@ -221,70 +270,110 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
             `;
-        }).join('');
+        }, `<div class="empty-state" style="text-align:center; padding:40px; color:#9ca3af;">🎉 暂无待审核卡片，你可以输入或抓取新爆款进行 AI 复刻！</div>`);
+    }
+
+    function renderApprovedQueueCard(post) {
+        return `
+            <div class="section-card" style="display:flex; justify-content:space-between; align-items:center; border-left:4px solid #3b82f6; margin-bottom:12px;">
+                <div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                        <span class="status-pill APPROVED">⏳ 待插件自动发布</span>
+                        <h4 style="color:#fff;">${escapeHtml(post.ai_title || post.original_title)}</h4>
+                    </div>
+                    <div style="font-size:13px; color:#9ca3af;">
+                        ID: #${post.id} · 标签: ${escapeHtml((post.ai_tags || []).join(' '))} · 入队时间: ${escapeHtml(post.updated_at)}
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn btn-secondary" style="font-size:12px;" onclick="updateReviewStatus(${post.id}, 'PUBLISHED')">手动标记为已发</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderPublishedQueueCard(post) {
+        return `
+            <div class="section-card" style="display:flex; justify-content:space-between; align-items:center; border-left:4px solid #10b981; opacity:0.88; margin-bottom:12px;">
+                <div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                        <span class="status-pill PUBLISHED" style="background:rgba(16,185,129,0.2); color:#34d399;">🚀 已成功自动发布</span>
+                        <h4 style="color:#e5e7eb; text-decoration:none;">${escapeHtml(post.ai_title || post.original_title)}</h4>
+                    </div>
+                    <div style="font-size:13px; color:#9ca3af;">
+                        ID: #${post.id} · 成功发布于: ${escapeHtml(post.updated_at)}
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <span style="color:#34d399; font-size:13px; margin-right:6px;">✔ 发布完成</span>
+                    <button class="btn btn-secondary" style="font-size:12px;" onclick="updateReviewStatus(${post.id}, 'APPROVED')">🔄 重新入队(重置)</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function syncQueueSection(key, posts, headingText, headingStyle, renderPost) {
+        let section = queueCardsList.querySelector(`[data-queue-section="${key}"]`);
+        if (posts.length === 0) {
+            section?.remove();
+            return null;
+        }
+
+        if (!section) {
+            section = document.createElement('section');
+            section.dataset.queueSection = key;
+            const heading = document.createElement('h4');
+            heading.dataset.queueHeading = 'true';
+            heading.style.cssText = headingStyle;
+            const items = document.createElement('div');
+            items.dataset.queueItems = 'true';
+            section.append(heading, items);
+        }
+
+        const heading = section.querySelector('[data-queue-heading]');
+        if (heading.textContent !== headingText) heading.textContent = headingText;
+        reconcilePostList(section.querySelector('[data-queue-items]'), posts, renderPost, '<div></div>');
+        return section;
     }
 
     // 渲染发布队列 (清晰区分 [待插件自动发布] 与 [已发布历史])
     function renderQueueList(posts) {
         if (posts.length === 0) {
-            queueCardsList.innerHTML = `<div class="empty-state" style="text-align:center; padding:40px; color:#9ca3af;">队列为空。审核通过的爆款贴会自动在此展示，等待 Chrome 插件自动发布。</div>`;
+            if (!queueCardsList.querySelector(':scope > [data-empty-state]')) {
+                const emptyState = createElement('<div class="empty-state" style="text-align:center; padding:40px; color:#9ca3af;">队列为空。审核通过的爆款贴会自动在此展示，等待 Chrome 插件自动发布。</div>');
+                emptyState.dataset.emptyState = 'true';
+                queueCardsList.replaceChildren(emptyState);
+            }
             return;
         }
 
-        const approvedList = posts.filter(p => p.status === 'APPROVED');
-        const publishedList = posts.filter(p => p.status === 'PUBLISHED');
+        queueCardsList.querySelector(':scope > [data-empty-state]')?.remove();
+        const approvedList = posts.filter(post => post.status === 'APPROVED');
+        const publishedList = posts.filter(post => post.status === 'PUBLISHED');
+        const approvedSection = syncQueueSection(
+            'approved',
+            approvedList,
+            `⏳ 待插件自动发布任务 (${approvedList.length})`,
+            'color:#60a5fa; margin-bottom:12px; display:flex; align-items:center; gap:8px;',
+            renderApprovedQueueCard
+        );
+        const publishedSection = syncQueueSection(
+            'published',
+            publishedList,
+            `🚀 插件已发布成功历史 (${publishedList.length})`,
+            'color:#34d399; margin-top:20px; margin-bottom:12px; display:flex; align-items:center; gap:8px;',
+            renderPublishedQueueCard
+        );
 
-        let html = '';
-
-        // 1. 待插件自动发布 Section
-        if (approvedList.length > 0) {
-            html += `<h4 style="color:#60a5fa; margin-bottom:12px; display:flex; align-items:center; gap:8px;">⏳ 待插件自动发布任务 (${approvedList.length})</h4>`;
-            html += approvedList.map(post => `
-                <div class="section-card" style="display:flex; justify-content:space-between; align-items:center; border-left: 4px solid #3b82f6; margin-bottom:12px;">
-                    <div>
-                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
-                            <span class="status-pill APPROVED">⏳ 待插件自动发布</span>
-                            <h4 style="color:#fff;">${escapeHtml(post.ai_title || post.original_title)}</h4>
-                        </div>
-                        <div style="font-size:13px; color:#9ca3af;">
-                            ID: #${post.id} · 标签: ${(post.ai_tags || []).join(' ')} · 入队时间: ${post.updated_at}
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <button class="btn btn-secondary" style="font-size:12px;" onclick="updateReviewStatus(${post.id}, 'PUBLISHED')">手动标记为已发</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        // 2. 插件已发布历史 Section
-        if (publishedList.length > 0) {
-            html += `<h4 style="color:#34d399; margin-top:20px; margin-bottom:12px; display:flex; align-items:center; gap:8px;">🚀 插件已发布成功历史 (${publishedList.length})</h4>`;
-            html += publishedList.map(post => `
-                <div class="section-card" style="display:flex; justify-content:space-between; align-items:center; border-left: 4px solid #10b981; opacity:0.88; margin-bottom:12px;">
-                    <div>
-                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
-                            <span class="status-pill PUBLISHED" style="background:rgba(16,185,129,0.2); color:#34d399;">🚀 已成功自动发布</span>
-                            <h4 style="color:#e5e7eb; text-decoration: none;">${escapeHtml(post.ai_title || post.original_title)}</h4>
-                        </div>
-                        <div style="font-size:13px; color:#9ca3af;">
-                            ID: #${post.id} · 成功发布于: ${post.updated_at}
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <span style="color:#34d399; font-size:13px; margin-right:6px;">✔ 发布完成</span>
-                        <button class="btn btn-secondary" style="font-size:12px;" onclick="updateReviewStatus(${post.id}, 'APPROVED')">🔄 重新入队(重置)</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        queueCardsList.innerHTML = html;
+        [approvedSection, publishedSection].filter(Boolean).forEach((section, index) => {
+            const sectionAtIndex = queueCardsList.children[index];
+            if (sectionAtIndex !== section) queueCardsList.insertBefore(section, sectionAtIndex || null);
+        });
     }
 
     // 渲染全部
     function renderAllList(posts) {
-        allCardsList.innerHTML = posts.map(post => `
+        reconcilePostList(allCardsList, posts, post => `
             <div class="section-card" style="margin-bottom:12px; padding:16px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -294,7 +383,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span style="font-size:12px; color:#9ca3af;">ID: #${post.id}</span>
                 </div>
             </div>
-        `).join('');
+        `, '<div class="empty-state" style="text-align:center; padding:40px; color:#9ca3af;">暂无爆款素材。</div>');
     }
 
     // 示例爆款预设库
