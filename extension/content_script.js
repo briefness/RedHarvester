@@ -104,13 +104,53 @@ function isVisibleElement(element) {
     return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
 }
 
-function findDetailTitle() {
-    return [
-        document.querySelector("#detail-title"),
-        document.querySelector(".interaction-container #detail-title"),
-        document.querySelector(".note-scroller .note-content > .title"),
-        document.querySelector(".note-content > .title")
-    ].find(isVisibleElement) || null;
+const DETAIL_TITLE_SELECTORS = [
+    "#detail-title",
+    ".interaction-container #detail-title",
+    ".note-scroller .note-content > .title",
+    ".note-content > .title"
+];
+
+const DETAIL_CONTENT_SELECTORS = [
+    "#detail-desc",
+    ".note-container #detail-desc",
+    "#note-page-container #detail-desc",
+    ".note-content #detail-desc",
+    ".note-container .desc",
+    "#note-page-container .desc",
+    ".note-content .desc"
+];
+
+function findDetailTitle(root = document) {
+    return DETAIL_TITLE_SELECTORS
+        .map(selector => root.querySelector(selector))
+        .find(isVisibleElement) || null;
+}
+
+function findOpenDetailRoot() {
+    return Array.from(document.querySelectorAll(
+        ".note-detail-mask .note-container, #noteContainer, #note-page-container, .note-container"
+    )).find(root => isVisibleElement(root) && root.querySelector(DETAIL_CONTENT_SELECTORS.join(", "))) || null;
+}
+
+function waitForOpenDetailRoot(timeoutMs = 10000) {
+    const currentRoot = findOpenDetailRoot();
+    if (currentRoot) return Promise.resolve(currentRoot);
+
+    return new Promise((resolve, reject) => {
+        const observer = new MutationObserver(() => {
+            const detailRoot = findOpenDetailRoot();
+            if (!detailRoot) return;
+            clearTimeout(timeoutId);
+            observer.disconnect();
+            resolve(detailRoot);
+        });
+        const timeoutId = setTimeout(() => {
+            observer.disconnect();
+            reject(new Error("小红书详情内容渲染超时"));
+        }, timeoutMs);
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+    });
 }
 
 function extractNoteMediaSources(root) {
@@ -129,7 +169,11 @@ function extractNoteMediaSources(root) {
 function findTopLikedNoteCard() {
     const rankedCards = Array.from(document.querySelectorAll("section.note-item")).map(card => {
         const links = Array.from(card.querySelectorAll("a[href*='/explore/']"));
-        const titleLink = links.find(link => link.innerText.trim()) || links[0];
+        const titleLink = links.find(link => link.innerText.trim())
+            || links.find(link => isVisibleElement(link) && link.href.includes("xsec_token="))
+            || links.find(link => link.href.includes("xsec_token="))
+            || links.find(isVisibleElement)
+            || links[0];
         const likeElement = card.querySelector(".like-wrapper .count, .like-wrapper, [class*='like'] [class*='count']");
         const cardLines = card.innerText.split("\n").map(line => line.trim()).filter(Boolean);
         const likeText = likeElement?.textContent?.trim() || cardLines.at(-1) || "";
@@ -140,113 +184,44 @@ function findTopLikedNoteCard() {
     return rankedCards[0] || null;
 }
 
+function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(message, response => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            resolve(response);
+        });
+    });
+}
+
 async function extractListCard(cardData) {
     const { card, titleLink, likes } = cardData;
-    const title = titleLink.innerText.trim();
-    if (!title) throw new Error("未识别到最高赞笔记标题");
-
     const sourceUrl = titleLink.href || new URL(titleLink.getAttribute("href"), window.location.href).href;
     if (!sourceUrl) throw new Error("未识别到最高赞笔记详情链接");
 
-    console.log(`[RED AI Scraper] 列表页选择最高赞笔记：${likes} 赞，正在读取详情 HTML`);
-
-    let response;
-    try {
-        response = await fetch(sourceUrl, {
-            credentials: "include",
-            headers: { Accept: "text/html,application/xhtml+xml" }
-        });
-    } catch (error) {
-        throw new Error(`最高赞笔记详情读取失败：${error.message}`);
-    }
-
-    if (!response.ok) {
-        throw new Error(`最高赞笔记详情暂时无法读取（HTTP ${response.status}）`);
-    }
-
-    const html = await response.text();
-    if (!html || html.includes("error_code=300031") || html.includes('"error_code":300031')) {
-        throw new Error("最高赞笔记详情暂时无法读取，小红书返回了不可浏览页面");
-    }
-
-    const detailDocument = new DOMParser().parseFromString(html, "text/html");
-    const cleanText = text => Array.from(new Set((text || "").split("\n").map(line => line.trim()).filter(Boolean))).join("\n");
-    const initialStateScript = Array.from(detailDocument.querySelectorAll("script"))
-        .find(script => script.textContent.trim().startsWith("window.__INITIAL_STATE__="));
-    let noteState = null;
-    if (initialStateScript) {
-        try {
-            const serializedState = initialStateScript.textContent.trim()
-                .slice("window.__INITIAL_STATE__=".length)
-                .replace(/;\s*$/, "")
-                .replace(/\bundefined\b/g, "null");
-            const initialState = JSON.parse(serializedState);
-            noteState = Object.values(initialState?.note?.noteDetailMap || {})
-                .find(detail => detail?.note)?.note || null;
-        } catch (error) {
-            console.warn("[RED AI Scraper] 初始化数据解析失败，将使用详情 DOM：", error.message);
-        }
-    }
-    const textFrom = selectors => selectors.map(selector => detailDocument.querySelector(selector)?.textContent || "")
-        .map(cleanText)
-        .filter(Boolean)
-        .sort((left, right) => right.length - left.length)[0] || "";
-    const detailTitle = cleanText(noteState?.title) || textFrom([
-        "#detail-title",
-        ".interaction-container #detail-title",
-        ".note-scroller .note-content > .title",
-        ".note-content > .title"
-    ]) || title;
-    const detailContent = cleanText(noteState?.desc) || textFrom([
-        "#detail-desc",
-        ".note-container #detail-desc",
-        "#note-page-container #detail-desc",
-        ".note-content #detail-desc",
-        ".note-container .desc",
-        "#note-page-container .desc",
-        ".note-content .desc"
-    ]);
-    if (!detailContent || detailContent === detailTitle) {
-        throw new Error("最高赞笔记详情暂时无法读取，未找到完整正文");
-    }
-
-    const detailRoot = detailDocument.querySelector(".note-container, #note-page-container, [class*='note-detail']") || detailDocument;
-    const stateImageSources = Array.isArray(noteState?.imageList) ? noteState.imageList
-        .map(image => image.urlDefault || image.urlPre || image.url || image.infoList?.find(item => item.imageScene === "WB_DFT")?.url || image.infoList?.[0]?.url)
-        .filter(Boolean)
-        .map(src => src.replace(/^http:/, "https:")) : [];
-    const domImageSources = extractNoteMediaSources(detailRoot);
-    const mediaSources = (stateImageSources.length ? stateImageSources : domImageSources)
-        .filter((src, index, all) => all.indexOf(src) === index);
-    const coverImage = detailDocument.querySelector("meta[property='og:image']")?.getAttribute("content");
-    if (!mediaSources.length && coverImage) mediaSources.push(coverImage.replace(/^http:/, "https:"));
-
-    const detailAuthor = cleanText(noteState?.user?.nickname) || textFrom([
-        ".author-container .name",
-        ".author-container .nickname",
-        ".user-name",
-        ".username",
-        "a[href*='/user/profile/'] .name"
-    ]) || card.querySelector("a[href*='/user/profile/']")?.innerText.trim() || "小红书爆款达人";
-    const detailLikeText = textFrom([
-        ".interact-container .like-wrapper .count",
-        ".like-wrapper .count",
-        ".like-wrapper"
-    ]);
-    const detailLikes = parseLikeCount(noteState?.interactInfo?.likedCount || detailLikeText) || likes;
-
-    return {
-        title: detailTitle,
-        content: detailContent,
-        author: detailAuthor,
-        likes: detailLikes,
-        images: mediaSources,
+    const fallback = {
+        title: titleLink.innerText.trim(),
+        author: card.querySelector("a[href*='/user/profile/']")?.innerText.trim() || "小红书爆款达人",
+        likes,
         source_url: sourceUrl
     };
+    console.log(`[RED AI Scraper] 列表页选择最高赞笔记：${likes} 赞，正在后台读取完整详情`);
+
+    const response = await sendRuntimeMessage({
+        action: "SCRAPE_DETAIL_IN_BACKGROUND",
+        url: sourceUrl,
+        fallback
+    });
+    if (!response?.success || !response.data) {
+        throw new Error(response?.reason || "最高赞笔记详情读取失败");
+    }
+    return response.data;
 }
 
 async function extractCurrentOrTopLikedPost() {
-    if (findDetailTitle()) return extractPageContent();
+    if (findOpenDetailRoot()) return extractPageContent();
 
     const topLiked = findTopLikedNoteCard();
     if (!topLiked) throw new Error("当前页面未识别到带点赞数的笔记卡片");
@@ -256,6 +231,16 @@ async function extractCurrentOrTopLikedPost() {
 
 // 监听来自 Extension Background / Popup 的指令
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "SCRAPE_DETAIL_PAGE") {
+        waitForOpenDetailRoot()
+            .then(detailRoot => sendResponse({
+                success: true,
+                data: extractPageContent(request.fallback || {}, detailRoot)
+            }))
+            .catch(error => sendResponse({ success: false, reason: error.message }));
+        return true;
+    }
+
     if (request.action === "SCRAPE_CURRENT_PAGE") {
         (async () => {
             try {
@@ -283,16 +268,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 /** 抓取逻辑：从小红书 DOM 提取爆款数据 */
-function extractPageContent() {
+function extractPageContent(fallback = {}, detailRoot = null) {
     console.log("[RED AI Scraper] 开始解析当前小红书 DOM 节点...");
 
-    // 1. 解析标题 (严格过滤 "猜你想搜" 等 UI 干扰词)
+    const noteRoot = detailRoot || findOpenDetailRoot();
+    if (!noteRoot) throw new Error("请先打开具体笔记详情后重试");
+
+    // 1. 读取可选标题；部分笔记只有正文，没有独立标题节点
     const invalidTitles = ["猜你想搜", "相关搜索", "全部评论", "小红书", "搜索", "评论"];
-    const titleEl = findDetailTitle();
-    if (!titleEl) throw new Error("请先打开具体笔记详情后重试");
-    const title = titleEl.innerText.trim();
-    if (!title || invalidTitles.some(keyword => title.includes(keyword))) throw new Error("未识别到有效笔记标题");
-    const noteRoot = titleEl.closest(".note-container, #note-page-container, [class*='note-detail']") || document;
+    const titleEl = findDetailTitle(noteRoot);
+    const titleCandidate = titleEl?.innerText.trim() || String(fallback.title || "").trim();
+    let title = invalidTitles.some(keyword => titleCandidate.includes(keyword)) ? "" : titleCandidate;
 
     // 2. 解析正文描述，只在笔记详情容器内查找，避免误抓页面页脚
     const footerMarkers = ["ICP备", "营业执照", "公网安备", "增值电信业务经营许可证", "举报电话", "网络文化经营许可证", "网信算备"];
@@ -304,16 +290,7 @@ function extractPageContent() {
             return true;
         }).join("\n");
     };
-    const contentSelectors = [
-        "#detail-desc",
-        ".note-container #detail-desc",
-        "#note-page-container #detail-desc",
-        ".note-content #detail-desc",
-        ".note-container .desc",
-        "#note-page-container .desc",
-        ".note-content .desc"
-    ];
-    const contentCandidates = contentSelectors.flatMap(selector => Array.from(noteRoot.querySelectorAll(selector)))
+    const contentCandidates = DETAIL_CONTENT_SELECTORS.flatMap(selector => Array.from(noteRoot.querySelectorAll(selector)))
         .map(element => cleanContent(element.innerText))
         .filter(text => text.length >= 8);
     let content = contentCandidates.sort((left, right) => right.length - left.length)[0] || "";
@@ -326,12 +303,13 @@ function extractPageContent() {
         const authorEl = noteRoot.querySelector("a[href*='/user/profile/'] .name, .author-container a");
         if (authorEl) author = authorEl.innerText.trim();
     }
-    if (!author) author = "小红书爆款达人";
+    if (!author) author = String(fallback.author || "").trim() || "小红书爆款达人";
 
     // 4. 解析点赞数
     const likeEl = noteRoot.querySelector(".interact-container .like-wrapper .count")
         || noteRoot.querySelector(".interact-container .like-wrapper");
-    const likes = parseLikeCount(likeEl?.innerText || likeEl?.textContent || "");
+    const likes = parseLikeCount(likeEl?.innerText || likeEl?.textContent || "")
+        || parseLikeCount(fallback.likes);
 
     // 5. 解析图片 URL
     const images = extractNoteMediaSources(noteRoot);
@@ -343,14 +321,16 @@ function extractPageContent() {
     }
 
     if (!content) throw new Error("未识别到有效笔记正文，请打开具体笔记详情后重试");
+    if (!title) title = content.split("\n")[0].slice(0, 40).trim();
+    if (!title) throw new Error("未识别到有效笔记标题或正文");
 
     const scrapedData = {
         title,
         content,
-        author: author,
-        likes: likes,
+        author,
+        likes,
         images,
-        source_url: window.location.href
+        source_url: fallback.source_url || window.location.href
     };
 
     console.log("[RED AI Scraper] 提取到的真实小红书爆款数据:", scrapedData);

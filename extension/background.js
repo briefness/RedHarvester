@@ -1,4 +1,7 @@
+importScripts('detail_tab.js');
+
 const BACKEND_URL = "http://localhost:8888/api";
+const scrapeDetailTab = DetailTabScraper.createDetailTabScraper(chrome);
 
 async function fetchJson(url, options) {
     const response = await fetch(url, options);
@@ -13,6 +16,13 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // 监听 Popup 或 Content Script 的消息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "SCRAPE_DETAIL_IN_BACKGROUND") {
+        scrapeDetailTab(request.url, request.fallback || {})
+            .then(data => sendResponse({ success: true, data }))
+            .catch(error => sendResponse({ success: false, reason: error.message }));
+        return true;
+    }
+
     if (request.action === "GET_PENDING_QUEUE") {
         fetch(`${BACKEND_URL}/extension/pending-publish`)
             .then(res => res.json())
